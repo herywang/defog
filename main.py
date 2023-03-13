@@ -2,24 +2,69 @@
 import sys
 from torchvision import transforms
 import cv2
+from PIL import Image
 import torch
 import torch.nn as nn
+import torchvision.transforms as tfs 
 from model import *
-from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtCore import Qt
+from models import *
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox, QLabel
+from PyQt5.QtCore import Qt
 from ui_mainwindow import Ui_MainWindow
-from DW_GAN_model import fusion_net
+from threading import Thread
 
+gps=3
+blocks=19
 device = torch.device("cpu")
 transform = transforms.Compose([transforms.ToTensor()])
+net = None
+
+def setToLabel(dst1, dst2, showLabel1:QLabel, showLabel2:QLabel):
+    qt_img1 = QImage(dst1.data, dst1.shape[1], dst1.shape[0], dst1.shape[1]*3, QImage.Format.Format_RGB888)
+    qt_img2 = QImage(dst2.data, dst2.shape[1], dst2.shape[0], dst2.shape[1]*3, QImage.Format.Format_RGB888)
+
+    pix_map1 = QPixmap.fromImage(qt_img1)
+    pix_map2 = QPixmap.fromImage(qt_img2)
+
+    pix_map1 = pix_map1.scaled(showLabel1.size(), Qt.AspectRatioMode.KeepAspectRatio)
+    pix_map2 = pix_map2.scaled(showLabel2.size(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    showLabel1.setPixmap(pix_map1)
+    showLabel2.setPixmap(pix_map2)
+    showLabel1.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    showLabel2.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
-def model1(fileName):
+def model1(fileName, showLabel1:QLabel, showLabel2:QLabel):
     source, target = dehaze(fileName)
     dst = cv2.cvtColor(source, cv2.COLOR_BGR2RGB)
     dst2 = cv2.cvtColor(target, cv2.COLOR_BGR2RGB)
-    return dst, dst2
+    setToLabel(dst, dst2, showLabel1, showLabel2)
+    
+
+def model2(image_type:str, filePath,showLabel1:QLabel, showLabel2:QLabel):
+    model_dir = './trained_models/'+image_type+'_train_ffa_3_19.pk'
+    global net
+    if net is None:
+        ckp=torch.load(model_dir,map_location=device)
+        net=FFA(gps=gps,blocks=blocks)
+        # net=nn.DataParallel(net)
+        net.load_state_dict(ckp['model'])
+    # net.eval()
+    haze = Image.open(filePath)
+    haze1= tfs.Compose([
+        tfs.ToTensor(),
+        tfs.Normalize(mean=[0.64, 0.6, 0.58],std=[0.14,0.15, 0.152])
+    ])(haze)[None,::]
+    # haze_no=tfs.ToTensor()(haze)[None,::]
+    with torch.no_grad():
+        pred = net(haze1)
+    ts=torch.squeeze(pred.clamp(0,1).cpu())
+    ts *= 255
+    ts = ts.astype(np.uint8)
+
+    setToLabel(haze,ts, showLabel1, showLabel2)
 
 
 class MainWindow(Ui_MainWindow):
@@ -29,70 +74,37 @@ class MainWindow(Ui_MainWindow):
         self.setupUi(qmainwindow)
         self.pushButton.clicked.connect(lambda: self.openfile())
         self.model2 = None
+        self.filePath = None
 
     def openfile(self):
         fileDialog = QFileDialog.getOpenFileName(self.mainwindow, "选择文件", "./", "Image files(*.jpg *jpeg *png)")
         fileName = fileDialog[0]
         if fileName is None or len(fileName) == 0:
             return
+        self.filePath = fileName
 
         index = self.comboBox.currentIndex()
         if index == 0:
-            QMessageBox.warning(self.mainwindow, "警告信息", "当前算法没有实现")
-            return
+            thread1 = Thread(target=model1, args=(fileName, self.label, self.label_2))
+            thread1.setDaemon(True)
+            thread1.start()
         elif index == 1:
-            dst, dst2 = model1(fileName)
-        elif index == 2:
-            if self.model2 is None:
-                self.model2 = fusion_net()
-                self.model2 = self.model2.to(device)
-                self.model2 = nn.DataParallel(self.model2)
-                self.label_7.setText("加载神经网络模型中......")
-                self.model2.load_state_dict(torch.load('./weights/dehaze.pkl', map_location='cpu'))
-                self.label_7.setText("神经网络模型加载完成!")
-            with torch.no_grad():
-                self.label_7.setText("开始执行推理......(大约1分钟)")
-                self.model2.eval()
-                img = cv2.imread(fileName)
-                init_img = img.copy()
-                if img.shape[0] != 1200 or img.shape[1] != 1600:
-                    img = cv2.resize(img, (1600, 1200))
-                img = transform(img)
-                img = img[None, :, :, :]
-                hazy_up = img[:, :, 0:1152, :]
-                hazy_down = img[:, :, 48:1200, :]
-
-                frame_out_up = self.model2(hazy_up)
-                frame_out_down = self.model2(hazy_down)
-                frame_out = (torch.cat([frame_out_up[:, :, 0:600, :].permute(0, 2, 3, 1), frame_out_down[:, :, 552:, :].permute(0, 2, 3, 1)], 1)).permute(0, 3, 1, 2)
-
-                im = torch.squeeze(frame_out).numpy().transpose(1, 2, 0)
-                im *= 255
-                im = im.clip(0, 255).astype(np.uint8)
-                init_img = cv2.cvtColor(init_img, cv2.COLOR_BGR2RGB)
-                im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-                dst, dst2 = init_img, im
+            # 室内去雾识别
+            thread2 = Thread(target=model2, args=('its', fileName, self.label, self.label_2))
+            thread2.setDaemon(True)
+            thread2.start()
         else:
-            QMessageBox.warning(self.mainwindow, "警告信息", "当前算法没有实现")
-            return
+            # 室外去雾识别
+            thread3 = Thread(target=model2, args=('ots', fileName, self.label, self.label_2))
+            thread3.setDaemon(True)
+            thread3.start()
 
-        qt_img1 = QImage(dst.data, dst.shape[1], dst.shape[0], dst.shape[1]*3, QImage.Format.Format_RGB888)
-        qt_img2 = QImage(dst2.data, dst.shape[1], dst.shape[0], dst.shape[1]*3, QImage.Format.Format_RGB888)
-
-        pix_map1 = QPixmap.fromImage(qt_img1)
-        pix_map2 = QPixmap.fromImage(qt_img2)
-
-        pix_map1 = pix_map1.scaled(self.label.size(), Qt.AspectRatioMode.KeepAspectRatio)
-        pix_map2 = pix_map2.scaled(self.label_2.size(), Qt.AspectRatioMode.KeepAspectRatio)
-
-        self.label.setPixmap(pix_map1)
-        self.label_2.setPixmap(pix_map2)
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.label_2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
+    print("计算设备:", device)
     app = QApplication(sys.argv)
     qmainwindow = QMainWindow()
     ui = MainWindow(qmainwindow)

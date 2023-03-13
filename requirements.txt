@@ -1,0 +1,2 @@
+pyqt6
+opencv-python

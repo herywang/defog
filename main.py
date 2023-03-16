@@ -16,7 +16,7 @@ from threading import Thread
 
 gps=3
 blocks=19
-device = torch.device("cpu")
+device = torch.device("cuda")
 transform = transforms.Compose([transforms.ToTensor()])
 net = None
 
@@ -71,7 +71,7 @@ def model2(image_type:str, filePath,showLabel1:QLabel, showLabel2:QLabel, combox
     ts=torch.squeeze(pred.clamp(0,1))
     ts *= 255
     ts = torch.permute(ts,(1,2,0))
-    ts = ts.numpy()
+    ts = ts.cpu().numpy()
     ts = ts.astype(np.uint8)
     combox.setEnabled(True)
     print("推理结束..")

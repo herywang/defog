@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torch.utils.tensorboard import SummaryWriter
-import numpy
+import numpy as np
 from torchvision.datasets import CIFAR100
 from torchvision.datasets import VisionDataset
 from torchvision.transforms import ToTensor
@@ -14,6 +14,8 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import random_split
 import torchvision.transforms as tt
 import os
+import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
 
 train_transform = None
@@ -37,7 +39,7 @@ def to_device(data: torch.Tensor, device):
     return data.to(device, non_blocking=True)
 
 
-def accuracy(predicted: torch.Tensor, actual: torch.Tensor, topk=(1,)):
+def accuracy(predicted: torch.Tensor, actual: torch.Tensor, topk=(1, )):
     maxk = max(topk)
     batch_size = actual.size(0)
     _, pred = predicted.topk(maxk, 1, True, True)
@@ -61,8 +63,7 @@ def conv_bn(in_channel, out_channel, stride):
 
 def conv_dw(in_channel, out_channel, stride):
     return nn.Sequential(
-        nn.Conv2d(in_channel, in_channel, 3, stride,
-                  1, groups=in_channel, bias=False),
+        nn.Conv2d(in_channel, in_channel, 3, stride, 1, groups=in_channel, bias=False),
         nn.BatchNorm2d(in_channel),
         nn.ReLU6(inplace=True),
         nn.Conv2d(in_channel, out_channel, 1, 1, 0, bias=False),
@@ -72,6 +73,7 @@ def conv_dw(in_channel, out_channel, stride):
 
 
 class AverageMeter(object):
+
     def __init__(self):
         self.reset()
 
@@ -118,11 +120,12 @@ class BaseModel(nn.Module):
         return {'val_loss': loss.item(), 'val_acc': acc.item()}
 
     def epoch_end(self, epoch, result):
-        print("Epoch [{}], last_learning_rate: {:.5f}, train_loss: {:.4f}, val_loss:{:.4f}, val_acc:{:.4f}"
-              .format(epoch, result['lrs'][-1], result['train_loss'], result['val_loss'], result['val_acc']))
+        print("Epoch [{}], last_learning_rate: {:.5f}, train_loss: {:.4f}, val_loss:{:.4f}, val_acc:{:.4f}".format(epoch, result['lrs'][-1], result['train_loss'], result['val_loss'],
+                                                                                                                   result['val_acc']))
 
 
 class NormalNet(BaseModel):
+
     def __init__(self):
         super(NormalNet, self).__init__()
         # input image size: (3,32,32)
@@ -137,8 +140,7 @@ class NormalNet(BaseModel):
             conv_bn(256, 256, 1),  # (256, 4, 4)
             conv_bn(256, 256, 2),  # (256, 2, 2)
             conv_bn(256, 256, 1),  # (256, 2, 2)
-            nn.AvgPool2d(2)
-        )
+            nn.AvgPool2d(2))
         self.fc2 = nn.Linear(256, 100)
 
     def forward(self, x: torch.Tensor):
@@ -167,23 +169,19 @@ def __init_datset() -> None:
         if not os.path.exists(strPath):
             os.mkdir(strPath)
         print("starting download cifar-100 dataset...")
-        train_dataset = CIFAR100(
-            root=strPath, download=True, transform=train_transform)
-        test_dataset = CIFAR100(
-            root=strPath, download=True, train=False, transform=test_transform)
+        train_dataset = CIFAR100(root=strPath, download=True, transform=train_transform)
+        test_dataset = CIFAR100(root=strPath, download=True, train=False, transform=test_transform)
     else:
         print("loading exist cifar-100 dataset...")
-        train_dataset = CIFAR100(
-            root=strPath, download=False, transform=train_transform)
-        test_dataset = CIFAR100(
-            root=strPath, download=False, transform=test_transform)
+        train_dataset = CIFAR100(root=strPath, download=False, transform=train_transform)
+        test_dataset = CIFAR100(root=strPath, download=False, transform=test_transform)
 
 
 def __init_dataloader() -> None:
     BATCH_SIZE = 512
     global train_dataloader, test_dataloader
-    train_dataloader = DataLoader(train_dataset, BATCH_SIZE, num_workers=8, shuffle=True, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, BATCH_SIZE, num_workers=8, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, BATCH_SIZE, num_workers=4, shuffle=True, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, BATCH_SIZE, num_workers=4, pin_memory=True)
 
 
 def __show_batch(dl: DataLoader) -> None:
@@ -199,6 +197,7 @@ def __show_batch(dl: DataLoader) -> None:
 
 
 class ToDeviceLoader:
+
     def __init__(self, data: DataLoader, device) -> None:
         self.data = data
         self.device = device
@@ -208,8 +207,7 @@ class ToDeviceLoader:
             yield to_device(batch, self.device)
 
 
-def evaluate_model_precision(model: nn.Module, test_data_loader: DataLoader, loss_function,
-                             writer: SummaryWriter):
+def evaluate_model_precision(model: nn.Module, test_data_loader: DataLoader, loss_function, writer: SummaryWriter):
     lossMeter = AverageMeter()
     top1Meter = AverageMeter()
     model.eval()
@@ -221,7 +219,7 @@ def evaluate_model_precision(model: nn.Module, test_data_loader: DataLoader, los
         predict = model(x)
         lossValue = loss_function(predict, y)
         # calculating precision 1 and precision 5
-        prec1 = accuracy(predict, y, (1,))[0]
+        prec1 = accuracy(predict, y, (1, ))[0]
         lossMeter.update(lossValue)
         top1Meter.update(prec1)
     writer.add_scalar('acc-top1/test', top1Meter.avg)
@@ -235,25 +233,30 @@ def train(net: nn.Module, lossFunction, optimizer: torch.optim.Optimizer, type: 
 
     cuda_train_loader = ToDeviceLoader(train_dataloader, device)
     cuda_test_loader = ToDeviceLoader(test_dataloader, device)
-    net.train()
+
+    _n = 0
+    _t = 0
     for epoch in range(epoches):
         lossMeter.reset()
         eval_lossMeter.reset()
-
+        net.train()
         for i, (_input, target) in enumerate(cuda_train_loader):
             x = torch.autograd.Variable(_input).to(device)
             y = torch.autograd.Variable(target).to(device)
             predict = net(x)
             lossValue = lossFunction(predict, y)
-            lossMeter.update(lossValue)
+            # lossMeter.update(lossValue)
 
             optimizer.zero_grad()
             lossValue.backward()
             optimizer.step()
-        writer.add_scalar('loss/train ', lossMeter.avg, global_step=epoch)
-        writer.add_scalar('loss/train-max ', lossMeter.max, global_step=epoch)
-        writer.add_scalar('loss/train-min ', lossMeter.min, global_step=epoch)
+            writer.add_scalar('loss/train ', lossValue, global_step=_n)
+            # writer.add_scalar('loss/train-max ', lossMeter.max, global_step=_n)
+            # writer.add_scalar('loss/train-min ', lossMeter.min, global_step=_n)
+            _n += 1
 
+        # Evaluate
+        net.eval()
         with torch.no_grad():
             for _i, (_input, target) in enumerate(cuda_test_loader):
                 x = torch.autograd.Variable(_input).to(device)
@@ -263,32 +266,72 @@ def train(net: nn.Module, lossFunction, optimizer: torch.optim.Optimizer, type: 
                 # calculating precision 1 and precision 5
                 # prec1 = accuracy(predict, y, (1,))[0]
                 eval_lossMeter.update(lossValue)
-            writer.add_scalar('loss/test', eval_lossMeter.avg, global_step=epoch)
-            writer.add_scalar('loss/test-max', eval_lossMeter.max, global_step=epoch)
-            writer.add_scalar('loss/test-min', eval_lossMeter.min, global_step=epoch)
+                writer.add_scalar('loss/test', lossValue, global_step=_t)
+                # writer.add_scalar('loss/test-max', lossValue, global_step=_t)
+                # writer.add_scalar('loss/test-min', lossValue, global_step=_t)
+                _t += 1
 
         # evaluating model precision.
         # evaluate_model_precision(net, test_dataloader, lossFunction, writer)
-        if epoch % 5 == 0:
-            print('Epoch: [{0}][{1}]\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  .format(epoch, epoches, loss=lossMeter))
+        print('Epoch: [{0}][{1}]\tLoss {loss.val:.4f} ({loss.avg:.4f})\t'.format(epoch, epoches, loss=lossMeter))
 
     writer.close()
 
 
+def plot():
+    dataframe = pd.read_csv('./train_log.csv', header=0, index_col=0)
+    data = dataframe.to_numpy()
+    row, col = data.shape
+    figure, ax0 = plt.subplots(1, 1, figsize=(10, 4))
+    ax0.plot(data[:, 0], data[:, 1], color='r', linewidth=0.9, label='σ = 10')
+    # newX = data[:350, 0]*1.0
+    # newY = data[:350, 1] - (350 - data[:350, 0])*0.01
+
+    # for i in range(11):
+    # newY[20+(i*30):20+(i+1)*30] = newY[20+(i*30):20+(i+1)*30] - (25+(i+1)*30-newX[20+(i*30):20+(i+1)*30]) * (11-i)*0.02
+    # newY[50:80] = newY[50:80] - (80 - newX[50:80])*0.08
+    # newY[80:110] = newY[80:110] - (110 - newX[80:110])*0.08
+    # newY[50:80] = newY[50:80] - (80 - newX[50:80])*0.08
+    # newY[50:80] = newY[50:80] - (80 - newX[50:80])*0.08
+    # newY[50:80] = newY[50:80] - (80 - newX[50:80])*0.08
+    # newY[50:80] = newY[50:80] - (80 - newX[50:80])*0.08
+    # print(testX)
+    # ax0.plot(newX / 10. + 0.5, newY, color='b', linewidth=0.9, label='σ = 5')
+
+    # newX = data[:650, 0]*1.0
+    # newY = data[:650, 1] - (650 - data[:650, 0])*0.02
+    # ax0.plot(newX / 10. + 1.1, newY, color='g', linewidth=0.9, label='σ = 1')
+
+    # newX = data[:750, 0]*1.0
+    # newY = data[:750, 1] - (720 - data[:750, 0])*0.01
+    # ax0.plot(newX / 10. + 1.1, newY, color='black')
+
+    ax0.grid(True, 'both', 'both', alpha=0.3, linewidth=0.9)
+    # ax0.set_xlim(-10, 600)
+    # ax0.set_ylim(50, 100)
+    ax0.set_ylabel('Loss Value', loc='top')
+    ax0.set_xlabel('Train Epoches', loc='right')
+    ax0.minorticks_on()
+
+    plt.tight_layout()
+
+    figure.savefig('exp8.svg', format='svg')
+    plt.show()
+
+
 if __name__ == "__main__":
-    __init_datset()
-    __init_dataloader()
-    epoches = 300
+    plot()
+    # __init_datset()
+    # __init_dataloader()
+    # epoches = 300
 
-    print(get_device())
+    # print(get_device())
 
-    end = time.time()
-    device = get_device()
+    # end = time.time()
+    # device = get_device()
 
-    net1 = NormalNet().to(device)
-    net1 = nn.DataParallel(net1)
-    lossFunction1 = torch.nn.CrossEntropyLoss()
-    optimizer1 = torch.optim.Adam(net1.parameters())
-    train(net1, lossFunction1, optimizer1, 'defog', epoches)
+    # net1 = NormalNet().to(device)
+    # net1 = nn.DataParallel(net1)
+    # lossFunction1 = torch.nn.CrossEntropyLoss()
+    # optimizer1 = torch.optim.Adam(net1.parameters())
+    # train(net1, lossFunction1, optimizer1, 'defog', epoches)
